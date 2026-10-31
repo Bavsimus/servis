@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+/* Cantürk koyu tema: siyaha yakın zemin, tek vurgu rengi kırmızı (logo) */
+@theme {
+  --color-ink: #09090b;
+  --color-surface: #111113;
+  --color-raised: #18181b;
+  --color-line: rgb(255 255 255 / 0.08);
+  --color-line-strong: rgb(255 255 255 / 0.14);
+  --color-fg: #f4f4f5;
+  --color-muted: #a1a1aa;
+  --color-subtle: #71717a;
+  --color-brand: #e3262d;
+  --color-brand-hover: #f03a40;
+  --color-brand-soft: rgb(227 38 45 / 0.12);
+}
+
+@theme inline {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-manrope), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-ink);
+  color: var(--color-fg);
+}
+
+::selection {
+  background: var(--color-brand);
+  color: white;
+}
+
+/* Form öğeleri koyu zeminde okunur kalsın */
+select option {
+  background: var(--color-raised);
+  color: var(--color-fg);
+}
+
+input[type="checkbox"] {
+  accent-color: var(--color-brand);
+}
+
+/* Çok ince ızgara dokusu (hero arka planı) */
+.bg-grid {
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.04) 1px, transparent 1px);
+  background-size: 56px 56px;
+}
