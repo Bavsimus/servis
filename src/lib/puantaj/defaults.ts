@@ -1,4 +1,4 @@
-import type { Vehicle, VehicleRecord } from "./types";
+import type { Assignment, Vehicle, VehicleRecord } from "./types";
 
 export function newId() {
   return crypto.randomUUID();
@@ -35,7 +35,14 @@ export function newVehicle(partial: Partial<Vehicle> = {}): Vehicle {
 
 /** Veritabanına kaydedilecek yeni araç kaydı */
 export function newVehicleRecord(partial: Partial<VehicleRecord> = {}): VehicleRecord {
-  return { ...BASE, id: newId(), clientId: null, position: 0, driverIds: [""], ...partial };
+  const { active, plate, brand, kind, modelYear, layout, hours, shift } = BASE;
+  return { id: newId(), active, plate, brand, kind, modelYear, layout, hours, shift, driverIds: [""], ...partial };
+}
+
+/** Aracın bir kurumdaki yeni görevi */
+export function newAssignment(partial: Partial<Assignment> & Pick<Assignment, "vehicleId" | "clientId">): Assignment {
+  const { poz, route, schedule, kmMin, kmMax, lastKm } = BASE;
+  return { id: newId(), position: 0, active: true, poz, route, schedule, kmMin, kmMax, lastKm, ...partial };
 }
 
 /** Düzen değişince sürücü sayısını 1 / 3'e tamamlar */

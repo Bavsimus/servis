@@ -3,34 +3,44 @@
 import { useRef, useState } from "react";
 import {
   deleteVehicle,
+  listAssignments,
   listClients,
   listDrivers,
   listVehicles,
   saveDriver,
   saveVehicle,
+  setAssignmentPositions,
   setVehicleActive,
-  setVehiclePositions,
+  syncAssignments,
+  upsertAssignment,
 } from "@/lib/data/repo";
 import { useData } from "@/lib/data/use-data";
-import { newVehicleRecord } from "@/lib/puantaj/defaults";
+import { newAssignment, newVehicleRecord } from "@/lib/puantaj/defaults";
 import { importPuantaj, type ImportResult } from "@/lib/puantaj/import";
-import type { DriverRecord, VehicleRecord } from "@/lib/puantaj/types";
+import type { Assignment, DriverRecord, VehicleRecord } from "@/lib/puantaj/types";
 import { useOrg } from "@/components/panel/org-context";
 import { Button, Card, PageHeader } from "@/components/panel/ui";
-import { SCHEDULE_LABELS, VehicleForm } from "@/components/panel/vehicle-form";
+import { SCHEDULE_LABELS, VehicleForm, type VehicleDraft } from "@/components/panel/vehicle-form";
 
 const plateKey = (p: string) => p.replace(/\s/g, "").toLocaleUpperCase("tr-TR");
+const ALL = "";
 
 export default function VehiclesPage() {
   const { org } = useOrg();
   const { data, error: loadError, reload } = useData(
     async () => {
-      const [vehicles, drivers, clients] = await Promise.all([listVehicles(org.id), listDrivers(org.id), listClients(org.id)]);
-      return { vehicles, drivers, clients };
+      const [vehicles, drivers, clients, assignments] = await Promise.all([
+        listVehicles(org.id),
+        listDrivers(org.id),
+        listClients(org.id),
+        listAssignments(org.id),
+      ]);
+      return { vehicles, drivers, clients, assignments };
     },
     [org.id],
   );
-  const [editing, setEditing] = useState<{ v: VehicleRecord; isNew: boolean } | null>(null);
+  const [filter, setFilter] = useState(ALL);
+  const [editing, setEditing] = useState<(VehicleDraft & { isNew: boolean }) | null>(null);
   const [imported, setImported] = useState<(ImportResult & { file: ArrayBuffer; picked: boolean[]; clientId: string }) | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -39,8 +49,20 @@ export default function VehiclesPage() {
   const vehicles = data?.vehicles ?? [];
   const drivers = data?.drivers ?? [];
   const clients = data?.clients ?? [];
+  const assignments = data?.assignments ?? [];
   const driverName = (id: string) => drivers.find((d) => d.id === id)?.name ?? "";
-  const clientName = (id: string | null) => clients.find((c) => c.id === id)?.name ?? "—";
+  const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? "";
+  const assignmentsOf = (vehicleId: string) => assignments.filter((a) => a.vehicleId === vehicleId);
+  const nextPosition = (clientId: string, list = assignments) =>
+    Math.max(-1, ...list.filter((a) => a.clientId === clientId).map((a) => a.position)) + 1;
+
+  // Kurum seçiliyse o kurumun Excel sırası, değilse plaka sırası
+  const rows: { v: VehicleRecord; a?: Assignment }[] = filter
+    ? assignments
+        .filter((a) => a.clientId === filter)
+        .map((a) => ({ v: vehicles.find((v) => v.id === a.vehicleId)!, a }))
+        .filter((r) => r.v)
+    : vehicles.map((v) => ({ v }));
 
   async function run(fn: () => Promise<unknown>) {
     setBusy(true);
@@ -50,7 +72,13 @@ export default function VehiclesPage() {
       await reload();
     } catch (e) {
       const m = (e as Error).message;
-      setError(m.includes("vehicles_org_id_plate_key") ? "Bu plakayla kayıtlı başka bir araç var." : m);
+      setError(
+        m.includes("vehicles_org_id_plate_key")
+          ? "Bu plakayla kayıtlı başka bir araç var."
+          : m.includes("vehicle_assignments_vehicle_id_client_id_key")
+            ? "Araç aynı kuruma iki kez eklenemez."
+            : m,
+      );
     } finally {
       setBusy(false);
     }
@@ -58,15 +86,22 @@ export default function VehiclesPage() {
 
   function move(index: number, dir: -1 | 1) {
     const j = index + dir;
-    if (j < 0 || j >= vehicles.length) return;
-    const a = vehicles[index];
-    const b = vehicles[j];
-    run(() => setVehiclePositions([{ id: a.id, position: j }, { id: b.id, position: index }, ...renumber(index, j)]));
+    if (!filter || j < 0 || j >= rows.length) return;
+    const order = rows.map((r) => r.a!);
+    [order[index], order[j]] = [order[j], order[index]];
+    run(() => setAssignmentPositions(order.map((a, i) => ({ id: a.id, position: i })).filter((x, i) => order[i].position !== x.position)));
   }
 
-  /** Eski kayıtlarda pozisyonlar çakışıyorsa sırayı baştan numaralandır */
-  function renumber(...skip: number[]) {
-    return vehicles.map((v, i) => ({ id: v.id, position: i })).filter((x, i) => !skip.includes(i) && vehicles[i].position !== x.position);
+  async function saveDraft(d: VehicleDraft & { isNew: boolean }) {
+    const vehicleId = await saveVehicle(org.id, d.vehicle, d.isNew);
+    const previous = d.isNew ? [] : assignmentsOf(d.vehicle.id);
+    const withPositions = d.assignments.map((a) => {
+      const old = previous.find((p) => p.id === a.id);
+      // yeni eklenen ya da kurumu değişen görev o kurumun listesinin sonuna gider
+      return old && old.clientId === a.clientId ? a : { ...a, position: nextPosition(a.clientId) };
+    });
+    await syncAssignments(org.id, vehicleId, withPositions, previous);
+    setEditing(null);
   }
 
   async function readFile(buf: ArrayBuffer, sheet?: string) {
@@ -81,7 +116,7 @@ export default function VehiclesPage() {
         ...res,
         file: buf,
         picked: res.months.map((m) => m === current),
-        clientId: imported?.clientId ?? clients[0]?.id ?? "",
+        clientId: imported?.clientId || filter || clients[0]?.id || "",
       });
     } catch (e) {
       setError(`Dosya okunamadı: ${(e as Error).message}`);
@@ -89,7 +124,8 @@ export default function VehiclesPage() {
   }
 
   async function applyImport() {
-    if (!imported) return;
+    if (!imported?.clientId) throw new Error("Kurum seçin.");
+    const clientId = imported.clientId;
     const known: DriverRecord[] = [...drivers];
     async function driverId(name: string, tc: string) {
       if (!name.trim()) return "";
@@ -103,18 +139,37 @@ export default function VehiclesPage() {
       return id;
     }
 
-    let next = vehicles.length;
-    for (const [i, v] of imported.vehicles.entries()) {
+    let position = nextPosition(clientId);
+    for (const [i, x] of imported.vehicles.entries()) {
       if (!imported.picked[i]) continue;
       const driverIds: string[] = [];
-      for (const d of v.drivers) driverIds.push(await driverId(d.name, d.tc));
-      const existing = vehicles.find((x) => plateKey(x.plate) === plateKey(v.plate));
+      for (const d of x.drivers) driverIds.push(await driverId(d.name, d.tc));
+      const existing = vehicles.find((v) => plateKey(v.plate) === plateKey(x.plate));
+      const vehicle: VehicleRecord = {
+        ...(existing ?? newVehicleRecord()),
+        plate: x.plate,
+        brand: x.brand,
+        kind: x.kind,
+        modelYear: x.modelYear,
+        layout: x.layout,
+        hours: x.hours,
+        driverIds,
+      };
+      const vehicleId = await saveVehicle(org.id, vehicle, !existing);
+      const current = existing && assignments.find((a) => a.vehicleId === existing.id && a.clientId === clientId);
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { drivers: _, ...fields } = v;
-      const record: VehicleRecord = existing
-        ? { ...existing, ...fields, id: existing.id, active: existing.active, shift: existing.shift, position: existing.position, driverIds, clientId: imported.clientId || existing.clientId }
-        : { ...fields, clientId: imported.clientId || null, position: next++, driverIds };
-      await saveVehicle(org.id, record, !existing);
+      const { id: _, ...fields } = newAssignment({ vehicleId, clientId });
+      await upsertAssignment(org.id, {
+        ...fields,
+        active: current?.active ?? true,
+        position: current?.position ?? position++,
+        poz: x.poz,
+        route: x.route,
+        schedule: x.schedule,
+        kmMin: x.kmMin,
+        kmMax: x.kmMax,
+        lastKm: x.lastKm,
+      });
     }
     setImported(null);
   }
@@ -123,13 +178,19 @@ export default function VehiclesPage() {
     <>
       <PageHeader
         title="Araçlar"
-        text="Puantajda kullanılan araçlar. Sıralama Excel'deki sayfa sırasıdır."
+        text="Bir araç birden fazla kurumda çalışabilir. Kurum seçince o kurumun Excel'deki sayfa sırasını düzenleyebilirsiniz."
         actions={
           <>
             <Button variant="secondary" onClick={() => fileRef.current?.click()}>
               Puantaj Excel&apos;inden içe aktar
             </Button>
-            <Button onClick={() => setEditing({ v: newVehicleRecord({ position: vehicles.length, clientId: clients[0]?.id ?? null }), isNew: true })}>
+            <Button
+              onClick={() => {
+                const vehicle = newVehicleRecord();
+                const clientId = filter || clients[0]?.id;
+                setEditing({ vehicle, assignments: clientId ? [newAssignment({ vehicleId: vehicle.id, clientId })] : [], isNew: true });
+              }}
+            >
               Araç ekle
             </Button>
           </>
@@ -186,9 +247,9 @@ export default function VehiclesPage() {
           }
         >
           <p className="mb-3 text-sm text-muted">
-            Aynı plakalı araç varsa bilgileri güncellenir; sürücüler T.C. kimlik numarasına göre eşleştirilir, yoksa
-            eklenir. Ayı güncel olmayan bloklar (eski aydan kalmış sayfalar) seçili gelmez; son km&apos;leri yanlış
-            olabilir.
+            Dosya seçilen kurumun puantajı olarak okunur: poz no, güzergâh ve son km o kuruma yazılır, aracın diğer
+            kurumlardaki bilgileri değişmez. Aynı plakalı araç varsa güncellenir; sürücüler T.C. kimlik numarasına göre
+            eşleştirilir. Ayı güncel olmayan bloklar seçili gelmez.
           </p>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[640px] text-sm">
@@ -232,34 +293,39 @@ export default function VehiclesPage() {
       {editing && (
         <Card
           className="mb-6"
-          title={editing.isNew ? "Yeni araç" : `${editing.v.plate} düzenleniyor`}
+          title={editing.isNew ? "Yeni araç" : `${editing.vehicle.plate} düzenleniyor`}
           actions={
             <>
               <Button variant="ghost" onClick={() => setEditing(null)}>
                 Vazgeç
               </Button>
-              <Button
-                disabled={busy || !editing.v.plate.trim()}
-                onClick={() =>
-                  run(async () => {
-                    await saveVehicle(org.id, editing.v, editing.isNew);
-                    setEditing(null);
-                  })
-                }
-              >
+              <Button disabled={busy || !editing.vehicle.plate.trim()} onClick={() => run(() => saveDraft(editing))}>
                 Kaydet
               </Button>
             </>
           }
         >
-          <VehicleForm value={editing.v} onChange={(v) => setEditing({ ...editing, v })} drivers={drivers} clients={clients} />
+          <VehicleForm value={editing} onChange={(d) => setEditing({ ...editing, ...d })} drivers={drivers} clients={clients} />
         </Card>
       )}
 
+      <div className="mb-4 flex flex-wrap gap-1">
+        {[{ id: ALL, name: "Tüm araçlar" }, ...clients].map((c) => (
+          <button
+            key={c.id}
+            onClick={() => setFilter(c.id)}
+            className={`rounded-full px-3 py-1.5 text-sm transition ${filter === c.id ? "bg-white/10 font-medium text-fg" : "text-muted hover:bg-white/5 hover:text-fg"}`}
+          >
+            {c.name}
+            {c.id && <span className="ml-1.5 text-xs text-subtle">{assignments.filter((a) => a.clientId === c.id).length}</span>}
+          </button>
+        ))}
+      </div>
+
       <Card>
-        {data && vehicles.length === 0 ? (
+        {data && rows.length === 0 ? (
           <div className="py-10 text-center text-sm text-muted">
-            <p className="font-medium text-fg">Henüz araç yok</p>
+            <p className="font-medium text-fg">{filter ? "Bu kurumda araç yok" : "Henüz araç yok"}</p>
             <p className="mt-1">Geçen ayın puantaj dosyasını içe aktararak başlayın ya da araçları tek tek ekleyin.</p>
           </div>
         ) : (
@@ -267,35 +333,33 @@ export default function VehiclesPage() {
             <table className="w-full min-w-[860px] text-sm">
               <thead className="bg-raised text-left text-muted">
                 <tr>
-                  <th className="px-4 py-2.5 font-medium">Sıra</th>
+                  <th className="px-4 py-2.5 font-medium">{filter ? "Sıra" : ""}</th>
                   <th className="font-medium">Plaka</th>
-                  <th className="font-medium">Cinsi / poz</th>
-                  <th className="font-medium">Kurum</th>
+                  <th className="font-medium">Cinsi</th>
                   <th className="font-medium">Sürücü</th>
-                  <th className="font-medium">Çalışma</th>
-                  <th className="text-right font-medium">Son km</th>
+                  <th className="font-medium">{filter ? "Poz / çalışma" : "Kurumlar"}</th>
+                  <th className="text-right font-medium">{filter ? "Son km" : ""}</th>
                   <th className="px-4 text-right font-medium">İşlem</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {vehicles.map((v, i) => (
-                  <tr key={v.id} className={v.active ? "" : "bg-raised text-subtle"}>
+                {rows.map(({ v, a }, i) => (
+                  <tr key={a?.id ?? v.id} className={v.active && (a?.active ?? true) ? "" : "bg-raised text-subtle"}>
                     <td className="px-4 py-2.5">
-                      <div className="flex items-center gap-1">
-                        <span className="w-5 tabular-nums">{i + 1}</span>
-                        <button className="rounded px-1 hover:bg-white/5" disabled={busy} onClick={() => move(i, -1)} aria-label="Yukarı taşı">
-                          ↑
-                        </button>
-                        <button className="rounded px-1 hover:bg-white/5" disabled={busy} onClick={() => move(i, 1)} aria-label="Aşağı taşı">
-                          ↓
-                        </button>
-                      </div>
+                      {filter && (
+                        <div className="flex items-center gap-1">
+                          <span className="w-5 tabular-nums">{i + 1}</span>
+                          <button className="rounded px-1 hover:bg-white/5" disabled={busy} onClick={() => move(i, -1)} aria-label="Yukarı taşı">
+                            ↑
+                          </button>
+                          <button className="rounded px-1 hover:bg-white/5" disabled={busy} onClick={() => move(i, 1)} aria-label="Aşağı taşı">
+                            ↓
+                          </button>
+                        </div>
+                      )}
                     </td>
                     <td className="font-medium">{v.plate}</td>
-                    <td>
-                      {v.kind} <span className="text-subtle">· {v.poz}</span>
-                    </td>
-                    <td className="text-muted">{clientName(v.clientId)}</td>
+                    <td>{v.kind}</td>
                     <td>
                       {v.layout === "vardiya" ? (
                         <span title={v.driverIds.map(driverName).join(", ")}>3 sürücü (vardiya)</span>
@@ -303,16 +367,34 @@ export default function VehiclesPage() {
                         driverName(v.driverIds[0] ?? "") || <span className="text-subtle">—</span>
                       )}
                     </td>
-                    <td>{SCHEDULE_LABELS[v.schedule]}</td>
-                    <td className="text-right tabular-nums">{v.lastKm.toLocaleString("tr-TR")}</td>
+                    <td>
+                      {a ? (
+                        <>
+                          {a.poz} <span className="text-subtle">· {SCHEDULE_LABELS[a.schedule]}</span>
+                        </>
+                      ) : (
+                        <div className="flex flex-wrap gap-1">
+                          {assignmentsOf(v.id).map((x) => (
+                            <span key={x.id} className="rounded-full bg-raised px-2 py-0.5 text-xs text-muted">
+                              {clientName(x.clientId)}
+                            </span>
+                          ))}
+                          {assignmentsOf(v.id).length === 0 && <span className="text-xs text-amber-300">Kuruma atanmamış</span>}
+                        </div>
+                      )}
+                    </td>
+                    <td className="text-right tabular-nums">{a ? a.lastKm.toLocaleString("tr-TR") : ""}</td>
                     <td className="whitespace-nowrap px-4 text-right">
                       <Button variant="ghost" onClick={() => run(() => setVehicleActive(v.id, !v.active))}>
                         {v.active ? "Pasifleştir" : "Aktifleştir"}
                       </Button>
-                      <Button variant="ghost" onClick={() => setEditing({ v, isNew: false })}>
+                      <Button variant="ghost" onClick={() => setEditing({ vehicle: v, assignments: assignmentsOf(v.id), isNew: false })}>
                         Düzenle
                       </Button>
-                      <Button variant="danger" onClick={() => confirm(`${v.plate} silinsin mi?`) && run(() => deleteVehicle(v.id))}>
+                      <Button
+                        variant="danger"
+                        onClick={() => confirm(`${v.plate} tüm kurumlardan silinsin mi?`) && run(() => deleteVehicle(v.id))}
+                      >
                         Sil
                       </Button>
                     </td>

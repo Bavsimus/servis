@@ -48,7 +48,7 @@ function shiftCell(vehicle: Vehicle, kind: string, holiday: boolean): ShiftCell 
     : { start: nightStart, end: dayStart, overtime: ot };
 }
 
-export function buildSheet(vehicle: Vehicle, ctx: MonthContext, salt = 0): VehicleSheet {
+export function buildSheet(vehicle: Vehicle, ctx: MonthContext, salt: number | string = 0): VehicleSheet {
   const rand = rng(`${vehicle.plate}|${ctx.year}-${ctx.month}|${salt}`);
   const lo = Math.min(vehicle.kmMin, vehicle.kmMax);
   const hi = Math.max(vehicle.kmMin, vehicle.kmMax);

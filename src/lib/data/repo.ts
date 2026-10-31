@@ -2,6 +2,7 @@
 
 import { supabase } from "@/lib/supabase/client";
 import type {
+  Assignment,
   Client,
   DriverRecord,
   Organization,
@@ -123,98 +124,159 @@ export async function deleteDriver(id: string) {
 
 type VehicleRow = {
   id: string;
-  client_id: string | null;
-  position: number;
   active: boolean;
   plate: string;
   brand: string;
   kind: string;
   model_year: string;
-  poz: string;
   layout: Vehicle["layout"];
   driver_ids: (string | null)[];
-  route: string;
-  schedule: Vehicle["schedule"];
-  km_min: number;
-  km_max: number;
-  last_km: number;
   hours: Vehicle["hours"];
   shift: Vehicle["shift"];
 };
 
 const toVehicle = (r: VehicleRow): VehicleRecord => ({
   id: r.id,
-  clientId: r.client_id,
-  position: r.position,
   active: r.active,
   plate: r.plate,
   brand: r.brand,
   kind: r.kind,
   modelYear: r.model_year,
-  poz: r.poz,
   layout: r.layout,
   driverIds: r.driver_ids.map((d) => d ?? ""),
-  route: r.route,
-  schedule: r.schedule,
-  kmMin: r.km_min,
-  kmMax: r.km_max,
-  lastKm: r.last_km,
   hours: r.hours,
   shift: r.shift,
 });
 
 const fromVehicle = (orgId: string, v: VehicleRecord) => ({
   org_id: orgId,
-  client_id: v.clientId,
-  position: v.position,
   active: v.active,
   plate: v.plate.trim(),
   brand: v.brand,
   kind: v.kind,
   model_year: v.modelYear,
-  poz: v.poz,
   layout: v.layout,
   driver_ids: v.driverIds.map((d) => d || null),
-  route: v.route,
-  schedule: v.schedule,
-  km_min: v.kmMin,
-  km_max: v.kmMax,
-  last_km: v.lastKm,
   hours: v.hours,
   shift: v.shift,
 });
 
 export async function listVehicles(orgId: string): Promise<VehicleRecord[]> {
-  const rows = check(
-    await supabase().from("vehicles").select("*").eq("org_id", orgId).order("position").order("created_at"),
-  ) as VehicleRow[];
+  const rows = check(await supabase().from("vehicles").select("*").eq("org_id", orgId).order("plate")) as VehicleRow[];
   return rows.map(toVehicle);
 }
 
-/** Yeni araç eklenir (aynı plaka varsa hata), mevcut araç id'siyle güncellenir */
-export async function saveVehicle(orgId: string, v: VehicleRecord, isNew: boolean) {
+/** Yeni araç eklenir (aynı plaka varsa hata), mevcut araç id'siyle güncellenir. Araç id'sini döndürür. */
+export async function saveVehicle(orgId: string, v: VehicleRecord, isNew: boolean): Promise<string> {
   const row = fromVehicle(orgId, v);
-  if (isNew) check(await supabase().from("vehicles").insert(row));
-  else check(await supabase().from("vehicles").update(row).eq("id", v.id));
+  if (isNew) return (check(await supabase().from("vehicles").insert(row).select("id").single()) as { id: string }).id;
+  check(await supabase().from("vehicles").update(row).eq("id", v.id));
+  return v.id;
 }
 
 export async function deleteVehicle(id: string) {
   check(await supabase().from("vehicles").delete().eq("id", id));
 }
 
-export async function setVehiclePositions(items: { id: string; position: number }[]) {
-  await Promise.all(items.map((i) => supabase().from("vehicles").update({ position: i.position }).eq("id", i.id)));
+export async function setVehicleActive(id: string, active: boolean) {
+  check(await supabase().from("vehicles").update({ active }).eq("id", id));
 }
 
-export async function setLastKm(items: { id: string; lastKm: number }[]) {
+// --- Araç-kurum atamaları ---------------------------------------------------
+
+type AssignmentRow = {
+  id: string;
+  vehicle_id: string;
+  client_id: string;
+  position: number;
+  active: boolean;
+  poz: string;
+  route: string;
+  schedule: Vehicle["schedule"];
+  km_min: number;
+  km_max: number;
+  last_km: number;
+};
+
+const toAssignment = (r: AssignmentRow): Assignment => ({
+  id: r.id,
+  vehicleId: r.vehicle_id,
+  clientId: r.client_id,
+  position: r.position,
+  active: r.active,
+  poz: r.poz,
+  route: r.route,
+  schedule: r.schedule,
+  kmMin: r.km_min,
+  kmMax: r.km_max,
+  lastKm: r.last_km,
+});
+
+const fromAssignment = (orgId: string, a: Assignment) => ({
+  org_id: orgId,
+  vehicle_id: a.vehicleId,
+  client_id: a.clientId,
+  position: a.position,
+  active: a.active,
+  poz: a.poz,
+  route: a.route,
+  schedule: a.schedule,
+  km_min: a.kmMin,
+  km_max: a.kmMax,
+  last_km: a.lastKm,
+});
+
+export async function listAssignments(orgId: string): Promise<Assignment[]> {
+  const rows = check(
+    await supabase().from("vehicle_assignments").select("*").eq("org_id", orgId).order("position").order("created_at"),
+  ) as AssignmentRow[];
+  return rows.map(toAssignment);
+}
+
+/**
+ * Aracın kurum atamalarını formdaki listeyle eşitler: yenileri ekler, değişenleri günceller,
+ * listeden çıkarılanları siler. Aynı kurum iki kez verilirse veritabanı reddeder.
+ */
+export async function syncAssignments(orgId: string, vehicleId: string, next: Assignment[], previous: Assignment[]) {
+  const keep = new Set(next.map((a) => a.id));
+  const removed = previous.filter((a) => !keep.has(a.id));
+  if (removed.length) {
+    check(await supabase().from("vehicle_assignments").delete().in("id", removed.map((a) => a.id)));
+  }
+  for (const a of next) {
+    const row = fromAssignment(orgId, { ...a, vehicleId });
+    if (previous.some((p) => p.id === a.id)) {
+      check(await supabase().from("vehicle_assignments").update(row).eq("id", a.id));
+    } else {
+      check(await supabase().from("vehicle_assignments").insert(row));
+    }
+  }
+}
+
+/** İçe aktarma: araç bu kurumda varsa günceller, yoksa sona ekler */
+export async function upsertAssignment(orgId: string, a: Omit<Assignment, "id">) {
+  check(
+    await supabase()
+      .from("vehicle_assignments")
+      .upsert(fromAssignment(orgId, { ...a, id: "" }), { onConflict: "vehicle_id,client_id" }),
+  );
+}
+
+export async function setAssignmentPositions(items: { id: string; position: number }[]) {
   const results = await Promise.all(
-    items.map((i) => supabase().from("vehicles").update({ last_km: i.lastKm }).eq("id", i.id)),
+    items.map((i) => supabase().from("vehicle_assignments").update({ position: i.position }).eq("id", i.id)),
   );
   results.forEach((r) => check(r));
 }
 
-export async function setVehicleActive(id: string, active: boolean) {
-  check(await supabase().from("vehicles").update({ active }).eq("id", id));
+/** Puantaj indirildikten sonra o kurumdaki km zincirini ilerletir */
+export async function setLastKm(clientId: string, items: { vehicleId: string; lastKm: number }[]) {
+  const results = await Promise.all(
+    items.map((i) =>
+      supabase().from("vehicle_assignments").update({ last_km: i.lastKm }).eq("client_id", clientId).eq("vehicle_id", i.vehicleId),
+    ),
+  );
+  results.forEach((r) => check(r));
 }
 
 // --- Çizelgeler -------------------------------------------------------------
@@ -278,16 +340,38 @@ export async function deleteTimesheet(id: string) {
 // --- Dışa aktarma -----------------------------------------------------------
 
 export async function exportOrganization(orgId: string) {
-  const [clients, drivers, vehicles] = await Promise.all([listClients(orgId), listDrivers(orgId), listVehicles(orgId)]);
-  return JSON.stringify({ version: 2, exportedAt: new Date().toISOString(), clients, drivers, vehicles }, null, 2);
+  const [clients, drivers, vehicles, assignments] = await Promise.all([
+    listClients(orgId),
+    listDrivers(orgId),
+    listVehicles(orgId),
+    listAssignments(orgId),
+  ]);
+  return JSON.stringify({ version: 3, exportedAt: new Date().toISOString(), clients, drivers, vehicles, assignments }, null, 2);
 }
 
-/** Araç kaydını puantaj için sürücüleri çözülmüş anlık görüntüye çevirir */
-export function resolveVehicle(v: VehicleRecord, drivers: DriverRecord[]): Vehicle {
+/**
+ * Araç kaydı + kurum ataması -> puantaj için anlık görüntü (sürücüler çözülmüş).
+ * Görüntünün id'si araç id'sidir; kurum puantaj bağlamından bilinir.
+ */
+export function resolveVehicle(v: VehicleRecord, a: Assignment, drivers: DriverRecord[]): Vehicle {
   const byId = new Map(drivers.map((d) => [d.id, d]));
   const n = v.layout === "vardiya" ? 3 : 1;
   return {
-    ...v,
+    id: v.id,
+    active: v.active && a.active,
+    plate: v.plate,
+    brand: v.brand,
+    kind: v.kind,
+    modelYear: v.modelYear,
+    layout: v.layout,
+    hours: v.hours,
+    shift: v.shift,
+    poz: a.poz,
+    route: a.route,
+    schedule: a.schedule,
+    kmMin: a.kmMin,
+    kmMax: a.kmMax,
+    lastKm: a.lastKm,
     drivers: Array.from({ length: n }, (_, i) => {
       const d = byId.get(v.driverIds[i] ?? "");
       return d ? { name: d.name, tc: d.tc } : { name: "", tc: "" };

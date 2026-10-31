@@ -99,11 +99,25 @@ export interface DriverRecord {
   active: boolean;
 }
 
-export type VehicleRecord = Omit<Vehicle, "drivers"> & {
-  clientId: string | null;
-  position: number;
+/** Aracın kurumdan bağımsız bilgileri */
+export type VehicleRecord = Pick<
+  Vehicle,
+  "id" | "active" | "plate" | "brand" | "kind" | "modelYear" | "layout" | "hours" | "shift"
+> & {
   /** tek: 1, vardiya: 3 eleman; boş sürücü için "" */
   driverIds: string[];
+};
+
+/**
+ * Aracın bir kurumdaki görevi. Aynı araç birden çok kurumda çalışabilir; her kurumun
+ * puantajı kendi poz no, güzergâh, km aralığı ve km zinciriyle hazırlanır.
+ */
+export type Assignment = Pick<Vehicle, "poz" | "route" | "schedule" | "kmMin" | "kmMax" | "lastKm"> & {
+  id: string;
+  vehicleId: string;
+  clientId: string;
+  position: number;
+  active: boolean;
 };
 
 export interface TimesheetRecord {

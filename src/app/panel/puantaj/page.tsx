@@ -3,12 +3,14 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
+  listAssignments,
   listClients,
   listDrivers,
   listTimesheets,
   listVehicles,
   resolveVehicle,
   saveTimesheet,
+  deleteTimesheet,
   setLastKm,
 } from "@/lib/data/repo";
 import { useData } from "@/lib/data/use-data";
@@ -33,8 +35,13 @@ export default function PuantajPage() {
   const { org } = useOrg();
   const base = useData(
     async () => {
-      const [vehicles, drivers, clients] = await Promise.all([listVehicles(org.id), listDrivers(org.id), listClients(org.id)]);
-      return { vehicles, drivers, clients };
+      const [vehicles, drivers, clients, assignments] = await Promise.all([
+        listVehicles(org.id),
+        listDrivers(org.id),
+        listClients(org.id),
+        listAssignments(org.id),
+      ]);
+      return { vehicles, drivers, clients, assignments };
     },
     [org.id],
   );
@@ -60,13 +67,18 @@ export default function PuantajPage() {
   const [done, setDone] = useState("");
   const [error, setError] = useState("");
 
-  const vehicles = useMemo(
-    () =>
-      (base.data?.vehicles ?? [])
-        .filter((v) => v.active && v.clientId === clientId)
-        .map((v) => resolveVehicle(v, base.data?.drivers ?? [])),
-    [base.data, clientId],
-  );
+  // Kurumun araçları, kurumun sayfa sırasıyla; km ve poz bilgisi o kurumdaki görevden gelir
+  const vehicles = useMemo(() => {
+    const d = base.data;
+    if (!d) return [];
+    return d.assignments
+      .filter((a) => a.clientId === clientId)
+      .flatMap((a) => {
+        const v = d.vehicles.find((x) => x.id === a.vehicleId);
+        return v ? [resolveVehicle(v, a, d.drivers)] : [];
+      })
+      .filter((v) => v.active);
+  }, [base.data, clientId]);
   const selected = vehicles.filter((v) => !excluded.includes(v.id));
   const saved = history.data?.find((t) => t.year === year && t.month === month);
 
@@ -86,7 +98,7 @@ export default function PuantajPage() {
   }
 
   function generate(nextSalt = salt) {
-    const out = selected.map((v) => buildSheet(v, ctx, nextSalt));
+    const out = selected.map((v) => buildSheet(v, ctx, `${clientId}:${nextSalt}`));
     setSheets(out);
     setTab((t) => (t && out.some((s) => s.vehicle.id === t) ? t : out[0]?.vehicle.id ?? null));
     setDone("");
@@ -128,7 +140,7 @@ export default function PuantajPage() {
       const buf = await workbook(sheets, ctx, template.id);
       await saveTimesheet(org.id, { clientId: client.id, year, month, templateId: template.id, context: ctx, sheets });
       if (updateKm) {
-        await setLastKm(sheets.map((s) => ({ id: s.vehicle.id, lastKm: totals(s, ctx).endKm })));
+        await setLastKm(client.id, sheets.map((s) => ({ vehicleId: s.vehicle.id, lastKm: totals(s, ctx).endKm })));
         await base.reload();
       }
       download(buf, fileName(year, month), XLSX_TYPE);
@@ -254,7 +266,7 @@ export default function PuantajPage() {
             {vehicles.length === 0 ? (
               <p className="text-sm text-muted">
                 Bu kuruma bağlı aktif araç yok. <Link href="/panel/araclar" className="text-fg underline">Araçlar</Link>{" "}
-                sayfasından araçlara kurum atayın.
+                sayfasından araçları bu kuruma ekleyin.
               </p>
             ) : (
               <ul className="space-y-1">
@@ -316,6 +328,23 @@ export default function PuantajPage() {
                         onClick={async () => download(await workbook(t.sheets, t.context, t.templateId), fileName(t.year, t.month), XLSX_TYPE)}
                       >
                         İndir
+                      </Button>
+                      <Button
+                        variant="danger"
+                        className="px-2 py-1"
+                        onClick={async () => {
+                          const label = `${MONTHS_TR[t.month - 1]} ${t.year}`;
+                          if (!confirm(`${label} kayıtlı çizelgesi silinsin mi?\n\nAraçların son km bilgisi değişmez; gerekirse Araçlar sayfasından düzeltin.`)) return;
+                          try {
+                            await deleteTimesheet(t.id);
+                            await history.reload();
+                            setDone(`${label} kayıtlı çizelgesi silindi.`);
+                          } catch (e) {
+                            setError((e as Error).message);
+                          }
+                        }}
+                      >
+                        Sil
                       </Button>
                     </span>
                   </li>

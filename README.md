@@ -18,7 +18,9 @@ organizations (servis firması: Cantürk, ...)
  ├─ memberships   kullanıcı ↔ firma, rol: owner / admin / member
  ├─ clients       müşteri kurumlar (KGM 1. Bölge ...) → çizelge şablonu + sayfa başlığı
  ├─ drivers       sürücüler (ad, TC, telefon)
- ├─ vehicles      araçlar → kurum, sürücüler, km ve çalışma ayarları
+ ├─ vehicles      araçlar → plaka, marka, sürücüler, mesai/vardiya düzeni
+ ├─ vehicle_assignments  araç ↔ kurum görevi: poz no, güzergâh, çalışma günleri,
+ │                       km aralığı, sayfa sırası, son km (bir araç birden çok kurumda)
  └─ timesheets    kaydedilen aylık çizelgeler (tekrar açma / indirme)
 ```
 
@@ -50,7 +52,7 @@ organizations (servis firması: Cantürk, ...)
 ### 1. Supabase
 
 1. [supabase.com](https://supabase.com)'da proje açın. Bölge olarak **Frankfurt (eu-central-1)** seçin: TC kimlik numarası gibi kişisel veriler AB'de kalsın (KVKK).
-2. **SQL Editor**'de `supabase/migrations/20261031000000_init.sql` dosyasının içeriğini çalıştırın.
+2. **SQL Editor**'de `supabase/migrations/` içindeki dosyaları **tarih sırasıyla** çalıştırın.
    (CLI ile: `supabase link --project-ref <ref>` ardından `supabase db push`.)
 3. **Authentication → URL Configuration**: Site URL = `https://panel.alanadi.com`; Redirect URLs'e `https://panel.alanadi.com/auth/callback` ve geliştirme için `http://localhost:3000/auth/callback` ekleyin.
 4. **Authentication → Users → Add user** ile kendi hesabınızı oluşturun (kayıt kapalıyken).

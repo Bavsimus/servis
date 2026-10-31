@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { deleteClient, listClients, listVehicles, saveClient } from "@/lib/data/repo";
+import { deleteClient, listAssignments, listClients, saveClient } from "@/lib/data/repo";
 import { useData } from "@/lib/data/use-data";
 import { getTemplate, TEMPLATES, DEFAULT_TEMPLATE_ID } from "@/lib/puantaj/templates";
 import type { Client } from "@/lib/puantaj/types";
@@ -14,8 +14,8 @@ export default function ClientsPage() {
   const { org } = useOrg();
   const { data, error, reload } = useData(
     async () => {
-      const [clients, vehicles] = await Promise.all([listClients(org.id), listVehicles(org.id)]);
-      return { clients, vehicles };
+      const [clients, assignments] = await Promise.all([listClients(org.id), listAssignments(org.id)]);
+      return { clients, assignments };
     },
     [org.id],
   );
@@ -94,7 +94,7 @@ export default function ClientsPage() {
 
       <div className="grid gap-4 md:grid-cols-2">
         {data?.clients.map((c) => {
-          const count = data.vehicles.filter((v) => v.clientId === c.id).length;
+          const count = data.assignments.filter((a) => a.clientId === c.id).length;
           return (
             <Card key={c.id} className={c.active ? "" : "opacity-60"}>
               <div className="flex items-start justify-between gap-4">
@@ -112,7 +112,7 @@ export default function ClientsPage() {
                   <Button
                     variant="danger"
                     onClick={async () => {
-                      if (!confirm(`${c.name} silinsin mi? Kayıtlı çizelgeleri de silinir; araçlar kurumsuz kalır.`)) return;
+                      if (!confirm(`${c.name} silinsin mi? Kayıtlı çizelgeleri ve araçların bu kurumdaki görevleri de silinir; araçların kendisi silinmez.`)) return;
                       await deleteClient(c.id);
                       reload();
                     }}
